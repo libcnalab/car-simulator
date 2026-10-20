@@ -35,6 +35,19 @@ namespace CarSim::Render
     {
         thread_local GpuMesh::SubmissionTotals submissionTotals;
 
+        CnaEngine::Graphics::AttributeMask AttributesOf(const VertexLayout layout)
+        {
+            using A = CnaEngine::Graphics::VertexAttribute;
+            switch (layout) {
+                case VertexLayout::PositionColor: return {A::Position, A::Color};
+                case VertexLayout::PositionTexture: return {A::Position, A::TexCoord0};
+                case VertexLayout::PositionColorTexture: return {A::Position, A::Color, A::TexCoord0};
+                case VertexLayout::PositionNormalTexture: return {A::Position, A::Normal, A::TexCoord0};
+                case VertexLayout::PositionNormalDualTexture: return {A::Position, A::Normal, A::TexCoord0, A::TexCoord1};
+            }
+            return {A::Position};
+        }
+
         template <typename TVertex>
         std::unique_ptr<VertexBuffer> Upload(GraphicsDevice& device, const VertexDeclaration& declaration,
                                              const std::vector<TVertex>& data)
@@ -119,6 +132,8 @@ namespace CarSim::Render
                                                           static_cast<int>(mesh.indices.size()), BufferUsage::WriteOnly);
             gpu->indices_->SetData(mesh.indices.data(), static_cast<int>(mesh.indices.size()));
         }
+        gpu->engine_ = CnaEngine::Graphics::GpuMesh::Borrow(*gpu->vertices_, *gpu->indices_, gpu->vertexCount_,
+                                                            gpu->primitiveCount_, gpu->bounds_, AttributesOf(layout));
         return gpu;
     }
 
@@ -138,6 +153,12 @@ namespace CarSim::Render
     void GpuMesh::RecordSubmission(const int triangles)
     {
         ++submissionTotals.draws;
+        submissionTotals.triangles += triangles;
+    }
+
+    void GpuMesh::RecordSubmissions(const long long draws, const long long triangles)
+    {
+        submissionTotals.draws += draws;
         submissionTotals.triangles += triangles;
     }
 

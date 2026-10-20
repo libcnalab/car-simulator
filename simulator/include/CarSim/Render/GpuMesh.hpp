@@ -3,6 +3,8 @@
 
 #include "CarSim/Render/MeshData.hpp"
 
+#include "CnaEngine/Graphics/GpuMesh.hpp"
+
 #include "Microsoft/Xna/Framework/Graphics/GraphicsDevice.hpp"
 #include "Microsoft/Xna/Framework/Graphics/IndexBuffer.hpp"
 #include "Microsoft/Xna/Framework/Graphics/VertexBuffer.hpp"
@@ -58,10 +60,15 @@ namespace CarSim::Render
         /// Binds the buffers and issues the indexed draw. The caller applies the effect pass.
         void Draw(Microsoft::Xna::Framework::Graphics::GraphicsDevice& device) const;
 
+        /// The same buffers as a cna-engine mesh, for drawing through cna-engine's renderer.
+        [[nodiscard]] const CnaEngine::Graphics::GpuMesh& Engine() const { return engine_; }
+
         /// Per-render-thread 3D submission accounting for project benchmarks. Direct indexed
         /// draws call RecordSubmission too; SpriteBatch UI work is intentionally separate.
         static void ResetSubmissions();
         static void RecordSubmission(int triangles);
+        /// Draws made elsewhere (cna-engine's renderer reports them in its statistics).
+        static void RecordSubmissions(long long draws, long long triangles);
         [[nodiscard]] static SubmissionTotals Submissions();
 
         [[nodiscard]] int VertexCount() const { return vertexCount_; }
@@ -80,5 +87,6 @@ namespace CarSim::Render
         VertexLayout layout_ = VertexLayout::PositionNormalTexture;
         BoundingBox bounds_;
         BoundingSphere sphere_;
+        CnaEngine::Graphics::GpuMesh engine_;   // borrows vertices_ and indices_
     };
 }
