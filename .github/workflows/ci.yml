@@ -40,6 +40,11 @@ jobs:
           path: sharp-runtime
       - uses: actions/checkout@v4
         with:
+          repository: libcna/cna-engine
+          ref: develop
+          path: cna-engine
+      - uses: actions/checkout@v4
+        with:
           repository: libcna/easy-gl
           path: easy-gl
       - uses: actions/checkout@v4
