@@ -5,8 +5,14 @@
 #include "CarSim/Render/Image.hpp"
 #include "CarSim/Render/ProceduralTextures.hpp"
 
+#include "CnaEngine/Graphics/Camera.hpp"
+#include "CnaEngine/Graphics/ForwardRenderer.hpp"
+#include "CnaEngine/Graphics/Material.hpp"
+#include "CnaEngine/Graphics/RenderQueue.hpp"
+#include "CnaEngine/Graphics/RenderStatistics.hpp"
+#include "CnaEngine/Graphics/Visibility.hpp"
+
 #include "Microsoft/Xna/Framework/Graphics/BlendState.hpp"
-#include "Microsoft/Xna/Framework/Graphics/CompareFunction.hpp"
 #include "Microsoft/Xna/Framework/Graphics/DepthStencilState.hpp"
 #include "Microsoft/Xna/Framework/Graphics/EffectPass.hpp"
 #include "Microsoft/Xna/Framework/Graphics/EffectPassCollection.hpp"
@@ -15,9 +21,11 @@
 #include "Microsoft/Xna/Framework/Graphics/SamplerStateCollection.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <iostream>
 #include <chrono>
+#include <limits>
 #include <thread>
 #include <cmath>
 
@@ -25,6 +33,8 @@ namespace CarSim::Render
 {
     using namespace Microsoft::Xna::Framework;
     using namespace Microsoft::Xna::Framework::Graphics;
+
+    namespace Engine = CnaEngine::Graphics;
 
     namespace
     {
@@ -37,7 +47,91 @@ namespace CarSim::Render
             }
         }
 
+        constexpr float kAnyDistance = std::numeric_limits<float>::infinity();
+        // AlphaTestEffect's Greater 110: the engine keeps alpha >= cutoff.
+        constexpr float kCardCutoff = 111.0f / 255.0f;
+        constexpr int kSurfaceCount = 7;
+
+        /// The engine's culling: bounds entirely beyond `range` or outside the frustum are dropped.
+        bool Visible(const Engine::Camera& camera, const BoundingSphere& bounds, const float range = kAnyDistance)
+        {
+            Engine::VisibilitySettings settings;
+            settings.maxDistance = range;
+            return Engine::Classify(bounds, 1, camera, settings) == Engine::Visibility::Visible;
+        }
+
+        /// `order` < another's draws first within its bucket (road surfaces before markings).
+        void Submit(Engine::RenderQueue& queue, const GpuMesh& mesh, const Engine::Material& material,
+                    const BoundingSphere& bounds, const std::int32_t order = 0)
+        {
+            Engine::RenderItem item;
+            item.mesh = &mesh.Engine();
+            item.material = &material;
+            item.bounds = bounds;
+            item.order = order;
+            queue.Submit(item);
+        }
+
+        /// Draws and empties one segment of the frame.
+        void Render(Engine::ForwardRenderer& renderer, Engine::RenderQueue& queue, const Engine::Camera& camera,
+                    WorldRenderStats& stats)
+        {
+            if (queue.Count() == 0) {
+                return;
+            }
+            queue.Sort(camera.Position());
+            Engine::RenderStatistics drawn;
+            renderer.Render(queue, camera, &drawn);
+            queue.Clear();
+            stats.drawCalls += static_cast<int>(drawn.drawCalls);
+            stats.triangles += static_cast<int>(drawn.primitives);
+            GpuMesh::RecordSubmissions(static_cast<long long>(drawn.drawCalls), static_cast<long long>(drawn.primitives));
+        }
+
+        /// LightingRig::Apply(BasicEffect&) as the engine's scene lighting.
+        void SetLighting(Engine::ForwardLighting& lighting, const LightingRig& rig)
+        {
+            lighting.defaultLighting = false;
+            lighting.lightDirection = rig.sunDirection;
+            lighting.lightColor = rig.sunColor;
+            lighting.fillLights = {{Vector3(0.0f, -1.0f, 0.0f), rig.skyFillColor, Vector3(0.0f, 0.0f, 0.0f)},
+                                   {Vector3(0.3f, 1.0f, 0.2f), rig.groundBounceColor, Vector3(0.0f, 0.0f, 0.0f)}};
+            lighting.ambientColor = rig.skyAmbient;
+            lighting.perPixelLighting = true;
+            lighting.fogEnabled = true;
+            lighting.fogColor = rig.fogColor;
+            lighting.fogStart = rig.fogStart;
+            lighting.fogEnd = rig.fogEnd;
+        }
     }
+
+    struct WorldRenderer::EnginePasses
+    {
+        EnginePasses(GraphicsDevice& device, const float lod1, const float lod2)
+            : renderer(device), beamObjects(device), beamCards(device), terrainLod({lod1, lod2}, 0.0f)
+        {
+        }
+
+        Engine::ForwardRenderer renderer;
+        // The headlight fill is a second light setup over what is already drawn: renderers of
+        // its own, their draws added on top.
+        Engine::ForwardRenderer beamObjects;
+        Engine::ForwardRenderer beamCards;
+        Engine::Camera camera;
+        Engine::RenderQueue queue;
+        Engine::RenderQueue beamQueue;
+        Engine::LodSelector terrainLod;
+
+        Engine::Material terrain;
+        std::array<Engine::Material, kSurfaceCount> surfaces;   // by Surface
+        std::vector<Engine::Material> objects;                   // parallel to objectBatches_
+        std::vector<Engine::Material> trees;                     // parallel to treeBatches_
+        std::vector<Engine::Material> signs;                     // parallel to signBatches_
+        std::vector<Engine::Material> litObjects;                // the headlight fill, parallel again
+        std::vector<Engine::Material> litTrees;
+        std::vector<Engine::Material> litSigns;
+        Engine::Material lamp;
+    };
 
     struct WorldRenderer::ShadowBakeJob
     {
@@ -84,33 +178,7 @@ namespace CarSim::Render
         BuildLampLights(device);
         BuildTrees(device);
         BuildSigns(device, signFont);
-
-        treeEffect_ = std::make_unique<AlphaTestEffect>(device);
-        treeEffect_->setAlphaFunctionProperty(CompareFunction::Greater);
-        treeEffect_->setReferenceAlphaProperty(110);
-        treeEffect_->setVertexColorEnabledProperty(true);
-        treeEffect_->setDiffuseColorProperty(Vector3(1.0f, 1.0f, 1.0f));
-        treeEffect_->setFogEnabledProperty(true);
-        treeEffect_->setFogColorProperty(rig.fogColor);
-        treeEffect_->setFogStartProperty(rig.fogStart);
-        treeEffect_->setFogEndProperty(rig.fogEnd);
-
-        headlightObjectEffect_ = std::make_unique<BasicEffect>(device);
-        headlightObjectEffect_->setLightingEnabledProperty(true);
-        headlightObjectEffect_->setTextureEnabledProperty(true);
-        headlightObjectEffect_->setVertexColorEnabledProperty(false);
-        headlightObjectEffect_->setAmbientLightColorProperty(Vector3(0.0f, 0.0f, 0.0f));
-        headlightObjectEffect_->getDirectionalLight0Property().setEnabledProperty(true);
-        headlightObjectEffect_->getDirectionalLight1Property().setEnabledProperty(false);
-        headlightObjectEffect_->getDirectionalLight2Property().setEnabledProperty(false);
-        headlightObjectEffect_->setFogEnabledProperty(true);
-        headlightObjectEffect_->setFogColorProperty(Vector3(0.0f, 0.0f, 0.0f));
-        headlightTreeEffect_ = std::make_unique<AlphaTestEffect>(device);
-        headlightTreeEffect_->setAlphaFunctionProperty(CompareFunction::Greater);
-        headlightTreeEffect_->setReferenceAlphaProperty(110);
-        headlightTreeEffect_->setVertexColorEnabledProperty(true);
-        headlightTreeEffect_->setFogEnabledProperty(true);
-        headlightTreeEffect_->setFogColorProperty(Vector3(0.0f, 0.0f, 0.0f));
+        BuildEngineMaterials(device);
 
         // Wet-road sheen. Wet asphalt is dark under your wheels and a mirror at the far end of
         // the street, because the sky's reflection climbs with the grazing angle -- and down a
@@ -138,33 +206,6 @@ namespace CarSim::Render
         roadSheenEffect_->setDiffuseColorProperty(Vector3(0.0f, 0.0f, 0.0f));
         roadSheenEffect_->setFogEnabledProperty(true);
 
-        terrainEffect_ = std::make_unique<DualTextureEffect>(device);
-        terrainEffect_->setVertexColorEnabledProperty(false);
-        terrainEffect_->setDiffuseColorProperty(Vector3(1.0f, 1.0f, 1.0f));
-        terrainEffect_->setFogEnabledProperty(true);
-        terrainEffect_->setFogColorProperty(rig.fogColor);
-        terrainEffect_->setFogStartProperty(rig.fogStart);
-        terrainEffect_->setFogEndProperty(rig.fogEnd);
-        terrainEffect_->setTextureProperty(grass_.get());
-        terrainEffect_->setTexture2Property(macro_.get());
-
-        roadEffect_ = std::make_unique<BasicEffect>(device);
-        rig.Apply(*roadEffect_);
-        roadEffect_->setTextureEnabledProperty(true);
-        roadEffect_->setVertexColorEnabledProperty(false);
-        roadEffect_->setSpecularColorProperty(Vector3(0.06f, 0.06f, 0.06f));
-        roadEffect_->setSpecularPowerProperty(10.0f);
-
-        // Roads carry their lighting, wear and ground shadows in the vertex colours.
-        roadUnlitEffect_ = std::make_unique<BasicEffect>(device);
-        roadUnlitEffect_->setLightingEnabledProperty(false);
-        roadUnlitEffect_->setTextureEnabledProperty(true);
-        roadUnlitEffect_->setVertexColorEnabledProperty(true);
-        roadUnlitEffect_->setFogEnabledProperty(true);
-        roadUnlitEffect_->setFogColorProperty(rig.fogColor);
-        roadUnlitEffect_->setFogStartProperty(rig.fogStart);
-        roadUnlitEffect_->setFogEndProperty(rig.fogEnd);
-
         markingState_ = std::make_unique<RasterizerState>();
         markingState_->setCullModeProperty(CullMode::CullCounterClockwiseFace);
         markingState_->setDepthBiasProperty(-0.00002f);
@@ -175,36 +216,97 @@ namespace CarSim::Render
         markingStateMirrored_->setSlopeScaleDepthBiasProperty(-1.0f);
     }
 
+    void WorldRenderer::BuildEngineMaterials(GraphicsDevice& device)
+    {
+        engine_ = std::make_unique<EnginePasses>(device, lod1DistanceM, lod2DistanceM);
+        EnginePasses& e = *engine_;
+        SetLighting(e.renderer.Lighting(), rig_);
+
+        // Terrain: grass detail times the baked macro (DualTextureEffect).
+        e.terrain.name = "terrain";
+        e.terrain.shading = Engine::ShadingModel::Unlit;
+        e.terrain.baseTexture = grass_.get();
+        e.terrain.secondaryTexture = macro_.get();
+        e.terrain.sampler = &SamplerState::AnisotropicWrap;
+        e.terrain.secondarySampler = &SamplerState::LinearClamp;
+
+        // Roads carry their lighting, wear and ground shadows in the vertex colours; markings are
+        // pulled towards the camera so they win the depth test against the road under them.
+        for (int i = 0; i < kSurfaceCount; ++i) {
+            const auto surface = static_cast<Surface>(i);
+            Engine::Material& m = e.surfaces[static_cast<std::size_t>(i)];
+            m.name = surface == Surface::Marking ? "marking" : "road";
+            m.shading = Engine::ShadingModel::Unlit;
+            m.vertexColors = true;
+            m.baseTexture = TextureFor(surface);
+            m.sampler = &SamplerState::AnisotropicWrap;
+            if (surface == Surface::Marking) {
+                m.depthBias = -0.00002f;
+                m.slopeScaleDepthBias = -1.0f;
+            }
+        }
+
+        // Buildings, props, trunks: lit and textured.
+        e.objects.resize(objectBatches_.size());
+        e.litObjects.resize(objectBatches_.size());
+        for (std::size_t i = 0; i < objectBatches_.size(); ++i) {
+            Engine::Material& m = e.objects[i];
+            m.name = "object";
+            m.baseTexture = objectBatches_[i].texture;
+            m.sampler = &SamplerState::AnisotropicWrap;
+            Engine::Material& lit = e.litObjects[i];
+            lit.name = "headlit object";
+            lit.blend = Engine::BlendMode::Additive;
+            lit.baseTexture = objectBatches_[i].texture;
+            lit.sampler = &SamplerState::AnisotropicWrap;
+            lit.diffuseColor = objectBatches_[i].diffuse;
+        }
+
+        // Tree and sign cards: alpha-tested, unlit (the light is baked into the cards); signs
+        // show both faces. The headlight fill adds them again, still cut out.
+        const auto card = [](const char* name, Texture2D* texture, const bool doubleSided) {
+            Engine::Material m;
+            m.name = name;
+            m.shading = Engine::ShadingModel::Unlit;
+            m.blend = Engine::BlendMode::AlphaTest;
+            m.alphaCutoff = kCardCutoff;
+            m.vertexColors = true;
+            m.doubleSided = doubleSided;
+            m.baseTexture = texture;
+            m.sampler = &SamplerState::LinearClamp;
+            return m;
+        };
+        const auto litCard = [&](Texture2D* texture) {
+            Engine::Material m = card("headlit card", texture, false);
+            m.blend = Engine::BlendMode::Additive;
+            m.discardBelowCutoff = true;
+            return m;
+        };
+        for (const auto& b : treeBatches_) {
+            e.trees.push_back(card("tree", b.texture, false));
+            e.litTrees.push_back(litCard(b.texture));
+        }
+        for (const auto& b : signBatches_) {
+            e.signs.push_back(card("sign", b.texture, true));
+            e.litSigns.push_back(litCard(b.texture));
+        }
+
+        // Street lamp light: glow quads added on top of the scene, without fog.
+        e.lamp.name = "lamp";
+        e.lamp.shading = Engine::ShadingModel::Unlit;
+        e.lamp.blend = Engine::BlendMode::Additive;
+        e.lamp.vertexColors = true;
+        e.lamp.doubleSided = true;
+        e.lamp.fog = false;
+        e.lamp.baseTexture = glowTexture_.get();
+        e.lamp.sampler = &SamplerState::LinearClamp;
+    }
+
     void WorldRenderer::ApplyLighting()
     {
-        const Vector3 scale = rig_.BakedLightingScale(bakeRig_);
-        if (roadEffect_) {
-            rig_.Apply(*roadEffect_);
-            roadEffect_->setTextureEnabledProperty(true);
-            roadEffect_->setVertexColorEnabledProperty(false);
-            roadEffect_->setSpecularColorProperty(Vector3(0.06f, 0.06f, 0.06f));
-            roadEffect_->setSpecularPowerProperty(10.0f);
-        }
-        if (terrainEffect_) {
-            terrainEffect_->setDiffuseColorProperty(scale);
-            terrainEffect_->setFogColorProperty(rig_.fogColor);
-            terrainEffect_->setFogStartProperty(rig_.fogStart);
-            terrainEffect_->setFogEndProperty(rig_.fogEnd);
-        }
-        bakedScale_ = scale;
+        bakedScale_ = rig_.BakedLightingScale(bakeRig_);
         lampFactor_ = rig_.LampFactor();
-        if (roadUnlitEffect_) {
-            roadUnlitEffect_->setDiffuseColorProperty(scale);
-            roadUnlitEffect_->setFogColorProperty(rig_.fogColor);
-            roadUnlitEffect_->setFogStartProperty(rig_.fogStart);
-            roadUnlitEffect_->setFogEndProperty(rig_.fogEnd);
-        }
-        if (treeEffect_) {
-            treeEffect_->setDiffuseColorProperty(scale);
-            treeEffect_->setFogColorProperty(rig_.fogColor);
-            treeEffect_->setFogStartProperty(rig_.fogStart);
-            treeEffect_->setFogEndProperty(rig_.fogEnd);
-        }
+        SetLighting(engine_->renderer.Lighting(), rig_);
     }
 
     WorldRenderer::~WorldRenderer()
@@ -236,8 +338,7 @@ namespace CarSim::Render
                     nextMacro->SetData(static_cast<int>(i), nullptr,
                         level.rgba.data(), 0, static_cast<int>(level.rgba.size()));
                 }
-                macro_ = std::move(nextMacro);
-                terrainEffect_->setTexture2Property(macro_.get());
+                macro_ = std::move(nextMacro);   // the terrain material picks it up at the next Draw
             }
             // Replace the road colours in small batches after the terrain texture.
             constexpr std::size_t kBatchesPerFrame = 24;
@@ -328,39 +429,27 @@ namespace CarSim::Render
         headlightHighBeam_ = highBeam;
     }
 
-    void WorldRenderer::DrawLampLights(GraphicsDevice& device, const Matrix& view, const Matrix& projection, const BoundingFrustum& frustum)
+    void WorldRenderer::DrawLampLights()
     {
-        if (lampFactor_ <= 0.01f || !glowEffect_ || lampLights_.empty()) {
+        if (lampFactor_ <= 0.01f || lampLights_.empty()) {
             return;
         }
-        glowEffect_->setWorldProperty(Matrix::getIdentityProperty());
-        glowEffect_->setViewProperty(view);
-        glowEffect_->setProjectionProperty(projection);
-        glowEffect_->setTextureProperty(glowTexture_.get());
+        EnginePasses& e = *engine_;
         // Sodium-white lamps. The lantern runs near white; the pool on the ground carries its
-        // lower intensity in the vertex colour, since both share this one effect.
-        glowEffect_->setDiffuseColorProperty(Vector3(0.95f, 0.84f, 0.60f) * lampFactor_);
-        device.setBlendStateProperty(BlendState::Additive);
-        device.setDepthStencilStateProperty(DepthStencilState::DepthRead);
-        device.setRasterizerStateProperty(RasterizerState::CullNone);
-        device.getSamplerStatesProperty()[0] = SamplerState::LinearClamp;
+        // lower intensity in the vertex colour, since both share this one material.
+        e.lamp.diffuseColor = Vector3(0.95f, 0.84f, 0.60f) * lampFactor_;
         for (const auto& mesh : lampLights_) {
-            if (!mesh || !frustum.Intersects(mesh->Sphere())) continue;
-            ApplyAll(*glowEffect_, device, *mesh);
-            ++stats_.drawCalls;
-            stats_.triangles += mesh->PrimitiveCount();
+            if (mesh && Visible(e.camera, mesh->Sphere())) {
+                Submit(e.queue, *mesh, e.lamp, mesh->Sphere());
+            }
         }
-        device.setBlendStateProperty(BlendState::Opaque);
-        device.setDepthStencilStateProperty(DepthStencilState::Default);
-        device.setRasterizerStateProperty(RasterizerState::CullCounterClockwise);
-        device.getSamplerStatesProperty()[0] = SamplerState::AnisotropicWrap;
-        glowEffect_->setDiffuseColorProperty(Vector3(1.0f, 1.0f, 1.0f));
+        Render(e.renderer, e.queue, e.camera, stats_);
     }
 
-    void WorldRenderer::DrawHeadlightFill(GraphicsDevice& device, const Matrix& view, const Matrix& projection,
-                                          const BoundingFrustum& frustum)
+    void WorldRenderer::DrawHeadlightFill()
     {
         if (headlightIntensity_ <= 0.01f) return;
+        EnginePasses& e = *engine_;
         const float range = headlightHighBeam_ ? 275.0f : 165.0f;
         const auto inBeam = [&](const BoundingSphere& sphere) {
             const Vector3 delta = sphere.Center - headlightPosition_;
@@ -369,64 +458,52 @@ namespace CarSim::Render
             const float sideways = std::sqrt(std::max(0.0f, delta.X * delta.X + delta.Z * delta.Z - along * along));
             return sideways < sphere.Radius + 5.0f + std::max(0.0f, along) * (headlightHighBeam_ ? 0.15f : 0.22f);
         };
-        device.setBlendStateProperty(BlendState::Additive);
-        device.setDepthStencilStateProperty(DepthStencilState::DepthRead);
-        device.setRasterizerStateProperty(RasterizerState::CullCounterClockwise);
-        device.getSamplerStatesProperty()[0] = SamplerState::AnisotropicWrap;
 
-        auto& object = *headlightObjectEffect_;
-        object.setWorldProperty(Matrix::getIdentityProperty());
-        object.setViewProperty(view);
-        object.setProjectionProperty(projection);
-        object.setFogStartProperty(10.0f);
-        object.setFogEndProperty(range);
-        object.setSpecularColorProperty(Vector3(0.0f, 0.0f, 0.0f));
-        auto& light = object.getDirectionalLight0Property();
-        light.setDirectionProperty(headlightForward_);
-        light.setDiffuseColorProperty((headlightHighBeam_ ? Vector3(0.72f, 0.70f, 0.63f) :
-                                                           Vector3(0.61f, 0.57f, 0.49f)) * headlightIntensity_);
-        light.setSpecularColorProperty(Vector3(0.0f, 0.0f, 0.0f));
-        for (const auto& batch : objectBatches_) {
-            if (!batch.mesh || !frustum.Intersects(batch.mesh->Sphere()) || !inBeam(batch.mesh->Sphere())) continue;
+        // Vertical scenery inside the beam, lit by the headlamps alone and added on top.
+        auto& object = e.beamObjects.Lighting();
+        object.defaultLighting = false;
+        object.lightDirection = headlightForward_;
+        object.lightColor = (headlightHighBeam_ ? Vector3(0.72f, 0.70f, 0.63f) : Vector3(0.61f, 0.57f, 0.49f)) *
+                            headlightIntensity_;
+        object.fillLights.clear();
+        object.ambientColor = Vector3(0.0f, 0.0f, 0.0f);
+        object.fogEnabled = true;
+        object.fogColor = Vector3(0.0f, 0.0f, 0.0f);   // additive: fog fades it out
+        object.fogStart = 10.0f;
+        object.fogEnd = range;
+        for (std::size_t i = 0; i < objectBatches_.size(); ++i) {
+            const auto& batch = objectBatches_[i];
+            if (!batch.mesh || !Visible(e.camera, batch.mesh->Sphere()) || !inBeam(batch.mesh->Sphere())) continue;
             if (batch.treeTrunk && rig_.fogEnd < 400.0f &&
                 Vector3::Distance(batch.mesh->Sphere().Center, headlightPosition_) > rig_.fogEnd + 30.0f) continue;
-            object.setTextureProperty(batch.texture);
-            object.setDiffuseColorProperty(batch.diffuse);
-            ApplyAll(object, device, *batch.mesh);
-            ++stats_.drawCalls;
-            stats_.triangles += batch.mesh->PrimitiveCount();
+            Submit(e.beamQueue, *batch.mesh, e.litObjects[i], batch.mesh->Sphere());
         }
+        Render(e.beamObjects, e.beamQueue, e.camera, stats_);
 
-        auto& trees = *headlightTreeEffect_;
-        trees.setWorldProperty(Matrix::getIdentityProperty());
-        trees.setViewProperty(view);
-        trees.setProjectionProperty(projection);
-        trees.setFogStartProperty(6.0f);
-        trees.setFogEndProperty(range);
-        trees.setDiffuseColorProperty((headlightHighBeam_ ? Vector3(0.40f, 0.39f, 0.34f) :
-                                                           Vector3(0.32f, 0.30f, 0.26f)) * headlightIntensity_);
-        device.getSamplerStatesProperty()[0] = SamplerState::LinearClamp;
-        for (const auto& batch : treeBatches_) {
-            if (!batch.mesh || !frustum.Intersects(batch.mesh->Sphere()) || !inBeam(batch.mesh->Sphere())) continue;
-            trees.setTextureProperty(batch.texture);
-            ApplyAll(trees, device, *batch.mesh);
-            ++stats_.drawCalls;
-            stats_.triangles += batch.mesh->PrimitiveCount();
+        auto& cards = e.beamCards.Lighting();
+        cards.fogEnabled = true;
+        cards.fogColor = Vector3(0.0f, 0.0f, 0.0f);
+        cards.fogStart = 6.0f;
+        cards.fogEnd = range;
+        const Vector3 treeLight = (headlightHighBeam_ ? Vector3(0.40f, 0.39f, 0.34f) : Vector3(0.32f, 0.30f, 0.26f)) *
+                                  headlightIntensity_;
+        const Vector3 signLight = (headlightHighBeam_ ? Vector3(0.59f, 0.56f, 0.48f) : Vector3(0.50f, 0.46f, 0.39f)) *
+                                  headlightIntensity_;
+        for (std::size_t i = 0; i < treeBatches_.size(); ++i) {
+            const auto& batch = treeBatches_[i];
+            if (!batch.mesh || !Visible(e.camera, batch.mesh->Sphere()) || !inBeam(batch.mesh->Sphere())) continue;
+            e.litTrees[i].baseTexture = batch.texture;
+            e.litTrees[i].diffuseColor = treeLight;
+            Submit(e.beamQueue, *batch.mesh, e.litTrees[i], batch.mesh->Sphere());
         }
-        trees.setDiffuseColorProperty((headlightHighBeam_ ? Vector3(0.59f, 0.56f, 0.48f) :
-                                                           Vector3(0.50f, 0.46f, 0.39f)) * headlightIntensity_);
-        for (const auto& batch : signBatches_) {
-            if (!batch.mesh || !frustum.Intersects(batch.mesh->Sphere()) || !inBeam(batch.mesh->Sphere())) continue;
-            trees.setTextureProperty(batch.texture);
-            ApplyAll(trees, device, *batch.mesh);
-            ++stats_.drawCalls;
-            stats_.triangles += batch.mesh->PrimitiveCount();
+        for (std::size_t i = 0; i < signBatches_.size(); ++i) {
+            const auto& batch = signBatches_[i];
+            if (!batch.mesh || !Visible(e.camera, batch.mesh->Sphere()) || !inBeam(batch.mesh->Sphere())) continue;
+            e.litSigns[i].baseTexture = batch.texture;
+            e.litSigns[i].diffuseColor = signLight;
+            Submit(e.beamQueue, *batch.mesh, e.litSigns[i], batch.mesh->Sphere());
         }
-
-        device.setBlendStateProperty(BlendState::Opaque);
-        device.setDepthStencilStateProperty(DepthStencilState::Default);
-        device.setRasterizerStateProperty(RasterizerState::CullCounterClockwise);
-        device.getSamplerStatesProperty()[0] = SamplerState::AnisotropicWrap;
+        Render(e.beamCards, e.beamQueue, e.camera, stats_);
     }
 
     Texture2D* WorldRenderer::TextureFor(const Surface s) const
@@ -446,6 +523,12 @@ namespace CarSim::Render
     void WorldRenderer::Draw(GraphicsDevice& device, const Matrix& view, const Matrix& projection, const BoundingFrustum& frustum,
                              const bool mirrored, const float maxDistance)
     {
+        EnginePasses& e = *engine_;
+        // The engine draws with exactly these matrices. A mirror pass arrives with its image
+        // flipped already; the engine flips it itself (and culls the other winding), so it is
+        // given the unflipped projection, whose frustum is `frustum`.
+        e.camera.SetMatrices(view, mirrored ? projection * Matrix::CreateScale(-1.0f, 1.0f, 1.0f) : projection);
+        e.camera.SetMirrored(mirrored);
         const RasterizerState& solid = mirrored ? RasterizerState::CullClockwise : RasterizerState::CullCounterClockwise;
         // Everything this pass may draw stops here.
         // The quality tier scales the main view's distances; a pass with its own cap (the mirror)
@@ -455,9 +538,13 @@ namespace CarSim::Render
         const float terrainCull = maxDistance > 0.0f ? std::min(maxDistance, terrainCullDistanceM) : terrainCullDistanceM * scale;
         stats_.terrainChunksDrawn = 0;
         stats_.roadBatchesDrawn = 0;
+        stats_.objectBatchesDrawn = 0;
+        stats_.treeBatchesDrawn = 0;
         stats_.drawCalls = 0;
         stats_.triangles = 0;
 
+        // The state the weather layers start from; the engine sets its own for each segment
+        // and restores this one afterwards.
         device.setBlendStateProperty(BlendState::Opaque);
         device.setDepthStencilStateProperty(DepthStencilState::Default);
         device.setRasterizerStateProperty(solid);
@@ -468,11 +555,7 @@ namespace CarSim::Render
         // that scattered light back. Applied per frame on top of the rig's scale, since the
         // wetness moves continuously while the lighting refreshes in steps.
         const float wetGround = 1.0f - 0.16f * wetness_;
-        terrainEffect_->setDiffuseColorProperty(bakedScale_ * wetGround);
-        terrainEffect_->setWorldProperty(Matrix::getIdentityProperty());
-        terrainEffect_->setViewProperty(view);
-        terrainEffect_->setProjectionProperty(projection);
-        const Vector3 eye = Matrix::Invert(view).getTranslationProperty();
+        const Vector3 eye = e.camera.Position();
         // Lying snow: the same surfaces again, alpha-blended white, pulled forward by the
         // marking depth bias so they win the depth test against themselves.
         const auto beginSnow = [&](const float alpha) {
@@ -504,32 +587,33 @@ namespace CarSim::Render
         // At full cover the terrain already supplies snow beneath the grass verge.
         // Let it meet the gravel shoulder directly instead of layering two snow patterns.
         const bool fullSnowGround = snowing && snow_ >= 0.98f;
+
+        // Terrain: the skirt, and the chunks within reach at their distance's level of detail.
+        e.terrain.diffuseColor = bakedScale_ * wetGround;
+        e.terrain.secondaryTexture = macro_.get();
         std::vector<const GpuMesh*> snowTerrain;
         if (terrainSkirt_) {
-            ApplyAll(*terrainEffect_, device, *terrainSkirt_);
-            ++stats_.drawCalls;
-            stats_.triangles += terrainSkirt_->PrimitiveCount();
+            Submit(e.queue, *terrainSkirt_, e.terrain, terrainSkirt_->Sphere());
         }
         for (const auto& chunk : terrainChunks_) {
             if (!chunk.lod0) {
                 continue;
             }
             const float distance = Vector3::Distance(eye, chunk.centre) - chunk.radius;
-            if (distance > terrainCull || !frustum.Intersects(chunk.lod0->Sphere())) {
+            if (distance > terrainCull || !Visible(e.camera, chunk.lod0->Sphere())) {
                 continue;
             }
-            const GpuMesh* mesh = distance < lod1DistanceM ? chunk.lod0.get() : (distance < lod2DistanceM ? chunk.lod1.get() : chunk.lod2.get());
+            const int level = e.terrainLod.Select(distance);
+            const GpuMesh* mesh = level == 0 ? chunk.lod0.get() : (level == 1 ? chunk.lod1.get() : chunk.lod2.get());
             if (!mesh) mesh = chunk.lod0.get();
-            ApplyAll(*terrainEffect_, device, *mesh);
+            Submit(e.queue, *mesh, e.terrain, chunk.lod0->Sphere());
             ++stats_.terrainChunksDrawn;
-            ++stats_.drawCalls;
-            stats_.triangles += mesh->PrimitiveCount();
             if (snowing) {
-                const GpuMesh* snowMesh = distance < lod1DistanceM ? chunk.snowLod0.get() :
-                                          (distance < lod2DistanceM ? chunk.snowLod1.get() : chunk.snowLod2.get());
+                const GpuMesh* snowMesh = level == 0 ? chunk.snowLod0.get() : (level == 1 ? chunk.snowLod1.get() : chunk.snowLod2.get());
                 snowTerrain.push_back(snowMesh ? snowMesh : chunk.snowLod0.get());
             }
         }
+        Render(e.renderer, e.queue, e.camera, stats_);
         if (snowing) {
             beginSnow(snow_);
             for (const GpuMesh* mesh : snowTerrain) {
@@ -539,56 +623,45 @@ namespace CarSim::Render
             endSnow();
         }
 
-        device.getSamplerStatesProperty()[0] = SamplerState::AnisotropicWrap;
-        roadUnlitEffect_->setWorldProperty(Matrix::getIdentityProperty());
-        roadUnlitEffect_->setViewProperty(view);
-        roadUnlitEffect_->setProjectionProperty(projection);
-        for (int pass = 0; pass < 2; ++pass) {
-            // Pass 0: surfaces; pass 1: markings with a depth bias.
-            const bool markings = pass == 1;
-            device.setRasterizerStateProperty(markings ? (mirrored ? *markingStateMirrored_ : *markingState_) : solid);
-            Vector3 tint = markings ? Vector3(0.92f, 0.92f, 0.90f) : Vector3(1.0f, 1.0f, 1.0f);
-            if (wetness_ > 0.0f && !markings) {
-                // Per batch below: grass verges darken like the terrain beside them.
+        // Roads and verges, then the markings.
+        const Vector3 sky = rig_.horizonColor;
+        for (int i = 0; i < kSurfaceCount; ++i) {
+            const auto surface = static_cast<Surface>(i);
+            Vector3 t(1.0f, 1.0f, 1.0f);
+            if (surface == Surface::Marking) {
+                t = Vector3(0.92f, 0.92f, 0.90f);
+                if (wetness_ > 0.0f) {
+                    // Wet asphalt swallows light and takes on the colour of the sky it reflects;
+                    // the paint on it darkens less, because it stays rough.
+                    const float wet = wetness_ * 0.45f;
+                    t = Vector3(t.X * (1.0f - 0.42f * wet) + sky.X * 0.10f * wet, t.Y * (1.0f - 0.42f * wet) + sky.Y * 0.10f * wet,
+                                t.Z * (1.0f - 0.40f * wet) + sky.Z * 0.13f * wet);
+                }
             } else if (wetness_ > 0.0f) {
-                // Wet asphalt swallows light and takes on the colour of the sky it reflects; the
-                // paint on it darkens less, because it stays rough.
-                const float wet = wetness_ * (markings ? 0.45f : 1.0f);
-                const Vector3 sky = rig_.horizonColor;
-                tint = Vector3(tint.X * (1.0f - 0.42f * wet) + sky.X * 0.10f * wet,
-                               tint.Y * (1.0f - 0.42f * wet) + sky.Y * 0.10f * wet,
-                               tint.Z * (1.0f - 0.40f * wet) + sky.Z * 0.13f * wet);
-            }
-            roadUnlitEffect_->setDiffuseColorProperty(Vector3(tint.X * bakedScale_.X, tint.Y * bakedScale_.Y, tint.Z * bakedScale_.Z));
-            for (const auto& b : roadBatches_) {
-                if ((b.surface == Surface::Marking) != markings || !b.mesh || !frustum.Intersects(b.mesh->Sphere())) {
-                    continue;
+                // Wet asphalt and stone swallow light and take on the colour of the sky they
+                // reflect; grass only darkens, like the terrain beside it.
+                if (surface == Surface::Grass) {
+                    t = Vector3(wetGround, wetGround, wetGround);
+                } else {
+                    const float wet = wetness_ * (surface == Surface::Asphalt ? 1.0f : 0.8f);
+                    t = Vector3(1.0f - 0.42f * wet + sky.X * 0.10f * wet, 1.0f - 0.42f * wet + sky.Y * 0.10f * wet,
+                                1.0f - 0.40f * wet + sky.Z * 0.13f * wet);
                 }
-                if (fullSnowGround && b.verge) continue;
-                if (wetness_ > 0.0f && !markings) {
-                    // Wet asphalt and stone swallow light and take on the colour of the sky
-                    // they reflect; grass only darkens, like the terrain beside it.
-                    Vector3 t(1.0f, 1.0f, 1.0f);
-                    if (b.surface == Surface::Grass) {
-                        t = Vector3(wetGround, wetGround, wetGround);
-                    } else {
-                        const float wet = wetness_ * (b.surface == Surface::Asphalt ? 1.0f : 0.8f);
-                        const Vector3 sky = rig_.horizonColor;
-                        t = Vector3(1.0f - 0.42f * wet + sky.X * 0.10f * wet, 1.0f - 0.42f * wet + sky.Y * 0.10f * wet,
-                                    1.0f - 0.40f * wet + sky.Z * 0.13f * wet);
-                    }
-                    roadUnlitEffect_->setDiffuseColorProperty(Vector3(t.X * bakedScale_.X, t.Y * bakedScale_.Y, t.Z * bakedScale_.Z));
-                }
-                roadUnlitEffect_->setTextureProperty(TextureFor(b.surface));
-                ApplyAll(*roadUnlitEffect_, device, *b.mesh);
-                ++stats_.roadBatchesDrawn;
-                ++stats_.drawCalls;
-                stats_.triangles += b.mesh->PrimitiveCount();
             }
+            e.surfaces[static_cast<std::size_t>(i)].diffuseColor =
+                Vector3(t.X * bakedScale_.X, t.Y * bakedScale_.Y, t.Z * bakedScale_.Z);
         }
+        for (const auto& b : roadBatches_) {
+            if (!b.mesh || (fullSnowGround && b.verge) || !Visible(e.camera, b.mesh->Sphere())) {
+                continue;
+            }
+            Submit(e.queue, *b.mesh, e.surfaces[static_cast<std::size_t>(b.surface)], b.mesh->Sphere(),
+                   b.surface == Surface::Marking ? 1 : 0);
+            ++stats_.roadBatchesDrawn;
+        }
+        Render(e.renderer, e.queue, e.camera, stats_);
         // Wet sheen over the road surfaces (not the markings: paint stays rough when it is wet).
         if (wetness_ > 0.01f && roadSheenEffect_) {
-            const Vector3 sky = rig_.horizonColor;
             const float strength = 0.95f * wetness_;
             roadSheenEffect_->setWorldProperty(Matrix::getIdentityProperty());
             roadSheenEffect_->setViewProperty(view);
@@ -598,8 +671,6 @@ namespace CarSim::Render
             // metres off, and never beyond the fog, where there is no road left to see.
             roadSheenEffect_->setFogStartProperty(7.0f);
             roadSheenEffect_->setFogEndProperty(std::min(150.0f, rig_.fogEnd));
-            // The road loop left the marking rasterizer state (with its depth bias) in place;
-            // the sheen is the same geometry as the surfaces, so it wants the plain one.
             device.setRasterizerStateProperty(solid);
             device.setBlendStateProperty(BlendState::Additive);
             device.setDepthStencilStateProperty(DepthStencilState::DepthRead);
@@ -664,39 +735,30 @@ namespace CarSim::Render
         }
 
         // Static objects: buildings, props, trunks (lit, textured).
-        device.setRasterizerStateProperty(solid);
-        roadEffect_->setWorldProperty(Matrix::getIdentityProperty());
-        roadEffect_->setViewProperty(view);
-        roadEffect_->setProjectionProperty(projection);
-        stats_.objectBatchesDrawn = 0;
-        for (const auto& b : objectBatches_) {
-            if (!b.mesh || !frustum.Intersects(b.mesh->Sphere())) {
+        for (std::size_t i = 0; i < objectBatches_.size(); ++i) {
+            const auto& b = objectBatches_[i];
+            if (!b.mesh) {
                 continue;
             }
             // Nothing past the fog end can be told from the fog itself, so no batch is drawn
             // beyond it; detail batches keep their own shorter range. Without this the buildings
             // of a settlement three kilometres away are still submitted in full.
             const float cull = b.cullDistance > 0.0f ? std::min(b.cullDistance, horizon) : horizon;
-            if (Vector3::Distance(eye, b.mesh->Sphere().Center) - b.mesh->Sphere().Radius > cull) {
+            if (!Visible(e.camera, b.mesh->Sphere(), cull)) {
                 continue;
             }
             if (b.treeTrunk && rig_.fogEnd < 400.0f &&
                 Vector3::Distance(eye, b.mesh->Sphere().Center) > horizon + 30.0f) continue;
-            roadEffect_->setTextureProperty(b.texture);
             // Rain-soaked plaster, roof tiles and wood darken and pick up a wet gloss.
-            roadEffect_->setDiffuseColorProperty(b.diffuse * (1.0f - 0.22f * wetness_));
-            roadEffect_->setEmissiveColorProperty(b.emissive + b.nightEmissive * lampFactor_);
-            roadEffect_->setSpecularColorProperty(b.specular + Vector3(0.20f, 0.20f, 0.21f) * wetness_);
-            roadEffect_->setSpecularPowerProperty(b.specularPower + 20.0f * wetness_);
-            ApplyAll(*roadEffect_, device, *b.mesh);
+            Engine::Material& m = e.objects[i];
+            m.diffuseColor = b.diffuse * (1.0f - 0.22f * wetness_);
+            m.emissiveColor = b.emissive + b.nightEmissive * lampFactor_;
+            m.specularColor = b.specular + Vector3(0.20f, 0.20f, 0.21f) * wetness_;
+            m.specularPower = b.specularPower + 20.0f * wetness_;
+            Submit(e.queue, *b.mesh, m, b.mesh->Sphere());
             ++stats_.objectBatchesDrawn;
-            ++stats_.drawCalls;
-            stats_.triangles += b.mesh->PrimitiveCount();
         }
-        roadEffect_->setDiffuseColorProperty(Vector3(1.0f, 1.0f, 1.0f));
-        roadEffect_->setEmissiveColorProperty(Vector3(0.0f, 0.0f, 0.0f));
-        roadEffect_->setSpecularColorProperty(Vector3(0.06f, 0.06f, 0.06f));
-        roadEffect_->setSpecularPowerProperty(10.0f);
+        Render(e.renderer, e.queue, e.camera, stats_);
         // Snow on the roofs.
         if (snowing) {
             beginSnow(snow_);
@@ -710,51 +772,40 @@ namespace CarSim::Render
         }
 
         // Trees: alpha-tested cards, both windings present, distance culled.
-        const Vector3 cameraPosition = Matrix::Invert(view).getTranslationProperty();
         // Alpha-tested foliage otherwise leaves pale cut-out silhouettes after the rest of the
         // world has vanished into dense fog. Use the same visibility horizon as opaque objects;
-        // the effect's fog ramp hides the last visible cards before a batch is culled.
+        // the fog ramp hides the last visible cards before a batch is culled.
         const float treeRange = std::min(horizon, maxDistance > 0.0f ? std::min(maxDistance, 1100.0f) : 1100.0f * scale * vegetationScale_);
-        device.getSamplerStatesProperty()[0] = SamplerState::LinearClamp;
-        treeEffect_->setDiffuseColorProperty(bakedScale_ * (1.0f - 0.10f * wetness_));
-        treeEffect_->setWorldProperty(Matrix::getIdentityProperty());
-        treeEffect_->setViewProperty(view);
-        treeEffect_->setProjectionProperty(projection);
-        stats_.treeBatchesDrawn = 0;
-        for (const auto& b : treeBatches_) {
-            if (!b.mesh || !frustum.Intersects(b.mesh->Sphere())) {
+        const Vector3 cardLight = bakedScale_ * (1.0f - 0.10f * wetness_);
+        for (std::size_t i = 0; i < treeBatches_.size(); ++i) {
+            const auto& b = treeBatches_[i];
+            if (!b.mesh || !Visible(e.camera, b.mesh->Sphere(), treeRange)) {
                 continue;
             }
-            const BoundingSphere& sphere = b.mesh->Sphere();
-            const float centreDistance = Vector3::Distance(sphere.Center, cameraPosition);
-            if (centreDistance - sphere.Radius > treeRange) {
-                continue;
-            }
-            if (rig_.fogEnd < 400.0f && centreDistance > treeRange + 30.0f) {
+            if (rig_.fogEnd < 400.0f && Vector3::Distance(b.mesh->Sphere().Center, eye) > treeRange + 30.0f) {
                 continue;   // a coarse 256 m chunk must not leave a white silhouette beyond dense fog
             }
-            treeEffect_->setTextureProperty(b.texture);
-            ApplyAll(*treeEffect_, device, *b.mesh);
+            e.trees[i].baseTexture = b.texture;   // the seasonal atlases are recoloured in place
+            e.trees[i].diffuseColor = cardLight;
+            Submit(e.queue, *b.mesh, e.trees[i], b.mesh->Sphere());
             ++stats_.treeBatchesDrawn;
-            ++stats_.drawCalls;
-            stats_.triangles += b.mesh->PrimitiveCount();
         }
-        // Sign faces: alpha-tested, both sides drawn (two quads), no distance cull beyond the frustum.
-        device.setRasterizerStateProperty(RasterizerState::CullNone);
-        for (const auto& b : signBatches_) {
-            if (!b.mesh || !frustum.Intersects(b.mesh->Sphere())) {
+        // Sign faces: the tree material, both sides drawn, no distance cull beyond the frustum.
+        for (std::size_t i = 0; i < signBatches_.size(); ++i) {
+            const auto& b = signBatches_[i];
+            if (!b.mesh || !Visible(e.camera, b.mesh->Sphere())) {
                 continue;
             }
-            treeEffect_->setTextureProperty(b.texture);
-            ApplyAll(*treeEffect_, device, *b.mesh);
-            ++stats_.drawCalls;
-            stats_.triangles += b.mesh->PrimitiveCount();
+            e.signs[i].baseTexture = b.texture;
+            e.signs[i].diffuseColor = cardLight;
+            Submit(e.queue, *b.mesh, e.signs[i], b.mesh->Sphere());
         }
+        Render(e.renderer, e.queue, e.camera, stats_);
+
+        if (!mirrored) DrawHeadlightFill();
+        // Street lamp light last, so it adds on top of everything the pass has drawn.
+        DrawLampLights();
         device.getSamplerStatesProperty()[0] = SamplerState::AnisotropicWrap;
         device.setRasterizerStateProperty(RasterizerState::CullCounterClockwise);
-
-        if (!mirrored) DrawHeadlightFill(device, view, projection, frustum);
-        // Street lamp light last, so it adds on top of everything the pass has drawn.
-        DrawLampLights(device, view, projection, frustum);
     }
 }

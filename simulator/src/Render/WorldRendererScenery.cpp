@@ -161,12 +161,6 @@ namespace CarSim::Render
         });
         glowTexture_ = UploadTexture(device, glow, true);
 
-        glowEffect_ = std::make_unique<BasicEffect>(device);
-        glowEffect_->setLightingEnabledProperty(false);
-        glowEffect_->setTextureEnabledProperty(true);
-        glowEffect_->setVertexColorEnabledProperty(true);
-        glowEffect_->setFogEnabledProperty(false);
-
         const auto& ground = world_.Ground();
         std::map<std::pair<int, int>, MeshData> chunks;
         constexpr float kPoolRadiusM = 8.5f;

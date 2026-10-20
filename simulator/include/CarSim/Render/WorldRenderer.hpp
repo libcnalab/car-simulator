@@ -1,6 +1,12 @@
 // Renders a loaded map: terrain chunks with a baked macro/lighting texture, road strips with
 // kerbs, sidewalks, shoulders and markings, and intersection patches. Everything is generated
 // from the map's simulation data so that what is drawn is what the vehicle drives on.
+//
+// The world's passes -- terrain, roads and markings, static objects, tree and sign cards, the
+// headlight fill and the street lamps' light -- are drawn by cna-engine's forward renderer
+// (culling, LOD, materials over XNA's stock effects, sorting and render states); the rain and
+// snow layers stay passes of their own, drawn between the engine's segments where they always
+// were.
 #pragma once
 
 #include "CarSim/Map/MapWorld.hpp"
@@ -10,9 +16,7 @@
 #include "CarSim/Render/LightingRig.hpp"
 
 #include "Microsoft/Xna/Framework/BoundingFrustum.hpp"
-#include "Microsoft/Xna/Framework/Graphics/AlphaTestEffect.hpp"
 #include "Microsoft/Xna/Framework/Graphics/BasicEffect.hpp"
-#include "Microsoft/Xna/Framework/Graphics/DualTextureEffect.hpp"
 #include "Microsoft/Xna/Framework/Graphics/GraphicsDevice.hpp"
 #include "Microsoft/Xna/Framework/Graphics/RasterizerState.hpp"
 #include "Microsoft/Xna/Framework/Graphics/Texture2D.hpp"
@@ -72,6 +76,8 @@ namespace CarSim::Render
                       const BitmapFont* signFont);
 
         /// `mirrored`: the projection flips x (mirror pass), so front faces are clockwise.
+        /// `frustum` is the view's (unflipped) frustum; the engine derives the same one from the
+        /// matrices, and the weather layers cull with it.
         /// `maxDistance`: caps every draw distance for this pass (0 = the rig's own horizon). The
         /// rear-view mirror uses it: in a strip 200 pixels tall nothing beyond a couple of
         /// hundred metres can be made out, and drawing it costs as much as the main view.
@@ -140,14 +146,11 @@ namespace CarSim::Render
         /// Warm pools on the ground under the street lamps and a glow at each lantern, drawn
         /// additively while the lamps are on.
         void BuildLampLights(Microsoft::Xna::Framework::Graphics::GraphicsDevice& device);
-        void DrawLampLights(Microsoft::Xna::Framework::Graphics::GraphicsDevice& device,
-                            const Microsoft::Xna::Framework::Matrix& view,
-                            const Microsoft::Xna::Framework::Matrix& projection,
-                            const Microsoft::Xna::Framework::BoundingFrustum& frustum);
-        void DrawHeadlightFill(Microsoft::Xna::Framework::Graphics::GraphicsDevice& device,
-                               const Microsoft::Xna::Framework::Matrix& view,
-                               const Microsoft::Xna::Framework::Matrix& projection,
-                               const Microsoft::Xna::Framework::BoundingFrustum& frustum);
+        /// Both draw through the engine with the camera of the current Draw.
+        void DrawLampLights();
+        void DrawHeadlightFill();
+        /// Engine materials for every batch, made once the batches exist.
+        void BuildEngineMaterials(Microsoft::Xna::Framework::Graphics::GraphicsDevice& device);
         void BuildSigns(Microsoft::Xna::Framework::Graphics::GraphicsDevice& device, const BitmapFont* font);
         void BuildTrees(Microsoft::Xna::Framework::Graphics::GraphicsDevice& device);
         void BuildTerrain(Microsoft::Xna::Framework::Graphics::GraphicsDevice& device);
@@ -174,9 +177,10 @@ namespace CarSim::Render
         LightingRig bakeRig_ = LightingRig::BakeReference();
         Microsoft::Xna::Framework::Vector3 bakedScale_{1.0f, 1.0f, 1.0f};   // baked lighting -> current rig
 
-        std::unique_ptr<Microsoft::Xna::Framework::Graphics::DualTextureEffect> terrainEffect_;
-        std::unique_ptr<Microsoft::Xna::Framework::Graphics::BasicEffect> roadEffect_;        // lit: buildings, props, trunks
-        std::unique_ptr<Microsoft::Xna::Framework::Graphics::BasicEffect> roadUnlitEffect_;   // baked vertex colours: roads, verges, markings
+        /// cna-engine's renderers, camera, queues and the batches' materials.
+        struct EnginePasses;
+        std::unique_ptr<EnginePasses> engine_;
+        /// Depth-biased states of the weather layers that lie on the ground.
         std::unique_ptr<Microsoft::Xna::Framework::Graphics::RasterizerState> markingState_;
         std::unique_ptr<Microsoft::Xna::Framework::Graphics::RasterizerState> markingStateMirrored_;
 
@@ -191,15 +195,11 @@ namespace CarSim::Render
         std::unique_ptr<Microsoft::Xna::Framework::Graphics::Texture2D> marking_;
         std::unique_ptr<Microsoft::Xna::Framework::Graphics::Texture2D> white_;
 
-        std::unique_ptr<Microsoft::Xna::Framework::Graphics::AlphaTestEffect> treeEffect_;
-        std::unique_ptr<Microsoft::Xna::Framework::Graphics::BasicEffect> headlightObjectEffect_;
-        std::unique_ptr<Microsoft::Xna::Framework::Graphics::AlphaTestEffect> headlightTreeEffect_;
         Microsoft::Xna::Framework::Vector3 headlightPosition_{};
         Microsoft::Xna::Framework::Vector3 headlightForward_{0.0f, 0.0f, -1.0f};
         float headlightIntensity_ = 0.0f;
         bool headlightHighBeam_ = false;
-        std::unique_ptr<Microsoft::Xna::Framework::Graphics::BasicEffect> glowEffect_;        // unlit, additive: street lamp light
-        std::unique_ptr<Microsoft::Xna::Framework::Graphics::Texture2D> glowTexture_;         // radial falloff
+        std::unique_ptr<Microsoft::Xna::Framework::Graphics::Texture2D> glowTexture_;         // radial falloff: street lamp light
         std::vector<std::unique_ptr<GpuMesh>> lampLights_;                                    // one mesh per chunk
         float lampFactor_ = 0.0f;                                                             // 0 by day, 1 after dark
         float wetness_ = 0.0f;                                                                // 0 dry road, 1 soaked
@@ -245,7 +245,7 @@ namespace CarSim::Render
         std::vector<ObjectBatch> objectBatches_;
         std::vector<TreeBatch> treeBatches_;
         std::vector<std::unique_ptr<Microsoft::Xna::Framework::Graphics::Texture2D>> signTextures_;
-        std::vector<TreeBatch> signBatches_;   // alpha-tested faces (share the tree effect)
+        std::vector<TreeBatch> signBatches_;   // alpha-tested faces (the tree material, both sides)
         WorldRenderStats stats_;
     };
 }
