@@ -55,7 +55,7 @@ add_library(carsim_core STATIC
     src/Traffic/TrafficOvertaking.cpp
 )
 target_include_directories(carsim_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(carsim_core PUBLIC CNA::Math CNA::CoreHeaders SharpRuntime::Text.Json)
+target_link_libraries(carsim_core PUBLIC CNA::Math CNA::CoreHeaders SharpRuntime::Text.Json CnaEngine::Core)
 if(CARSIM_SANITIZERS)
     target_link_libraries(carsim_core PUBLIC carsim_sanitizers)
 endif()
@@ -111,7 +111,7 @@ add_library(carsim_render STATIC
     src/Render/WorldRendererScenery.cpp
 )
 target_include_directories(carsim_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(carsim_render PUBLIC carsim_core CNA)
+target_link_libraries(carsim_render PUBLIC carsim_core CNA CnaEngine::Graphics)
 carsim_apply_warnings(carsim_render)
 
 # -----------------------------------------------------------------------------

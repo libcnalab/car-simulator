@@ -118,6 +118,18 @@ def load_type_list(path: pathlib.Path) -> set[str]:
     return types
 
 
+# cna-engine's strict modules (its ADR-001 allowance): they use XNA 4.0 types only
+# and pass the same rules as this project. CnaEngine/Extended and CnaEngine/Enhanced
+# stay forbidden by omission.
+CNA_ENGINE_STRICT_PREFIXES = (
+    "CnaEngine/Core/",
+    "CnaEngine/Input/",
+    "CnaEngine/Diagnostics/",
+    "CnaEngine/Graphics/",
+    "CnaEngine/Assets/",
+)
+
+
 def header_to_type(include_path: str) -> str | None:
     """Microsoft/Xna/Framework/Graphics/BasicEffect.hpp -> Microsoft.Xna.Framework.Graphics.BasicEffect"""
     if not include_path.startswith("Microsoft/Xna/Framework/"):
@@ -149,6 +161,7 @@ def check_file(path: pathlib.Path, xna_types: set[str], violations: list[str]) -
                 violations.append(f"{rel}:{line_no}: unexpected Microsoft header '{inc}'")
             elif opener == '"' and not (inc.startswith("CarSim/") or inc.startswith("System/")
                                         or inc.startswith("SharpRuntime/")
+                                        or inc.startswith(CNA_ENGINE_STRICT_PREFIXES)
                                         or inc.startswith("gtest/")
                                         or ("/" not in inc and (path.parent / inc).is_file())):
                 # Local includes must be project headers, Sharp Runtime, the test framework or a

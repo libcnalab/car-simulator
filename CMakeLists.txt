@@ -40,8 +40,10 @@ set(CARSIM_CNA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../cna" CACHE PATH
     "Path to the CNA framework checkout (branch: next)")
 set(CARSIM_SHARP_RUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../sharp-runtime" CACHE PATH
     "Path to the Sharp Runtime checkout (branch: next)")
+set(CARSIM_CNA_ENGINE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../cna-engine" CACHE PATH
+    "Path to the cna-engine checkout (only its strict modules are used)")
 
-foreach(_carsim_dep IN ITEMS CARSIM_CNA_ROOT CARSIM_SHARP_RUNTIME_ROOT)
+foreach(_carsim_dep IN ITEMS CARSIM_CNA_ROOT CARSIM_SHARP_RUNTIME_ROOT CARSIM_CNA_ENGINE_ROOT)
     if(NOT EXISTS "${${_carsim_dep}}/CMakeLists.txt")
         message(FATAL_ERROR
             "car-simulator: ${_carsim_dep} does not point at a checkout: '${${_carsim_dep}}'.\n"
@@ -67,6 +69,10 @@ set(CNA_ENABLE_DRACO       OFF CACHE BOOL "" FORCE)
 set(EASYGL_BUILD_TESTS     OFF CACHE BOOL "" FORCE)
 set(EASYGL_BUILD_EXAMPLES  OFF CACHE BOOL "" FORCE)
 set(SHARP_RUNTIME_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+# cna-engine links CNA's static module targets. With CNA's default shared
+# library the `CNA` umbrella would be a second copy of CNA in the same process
+# (cna-engine upstream-issues.md UP-006), so CNA is built statically here.
+set(CNA_SHARED_LIBRARY     OFF CACHE BOOL "" FORCE)
 
 # Keep CNA's persistent SDL build cache inside this project's build tree rather
 # than inside the (possibly read-only) CNA checkout.
@@ -101,10 +107,22 @@ if(NOT TARGET SharpRuntime::Text.Json)
     message(FATAL_ERROR "car-simulator: SharpRuntime::Text.Json is missing; check SHARP_RUNTIME_COMPONENTS.")
 endif()
 
+# cna-engine's strict modules (CnaEngine::Core, CnaEngine::Graphics) over the CNA
+# just added: XNA 4.0 types only, accepted by scripts/check_xna_only.py under the
+# allowance of cna-engine's ADR-001. Nothing that needs CNA's extensions is built.
+set(CNA_ENGINE_BUILD_TESTS              OFF CACHE BOOL "" FORCE)
+set(CNA_ENGINE_BUILD_EXAMPLES           OFF CACHE BOOL "" FORCE)
+set(CNA_ENGINE_WITH_EXTENDED            OFF CACHE BOOL "" FORCE)
+set(CNA_ENGINE_WITH_ENHANCED_GRAPHICS   OFF CACHE BOOL "" FORCE)
+set(CNA_ENGINE_INSTALL                  OFF CACHE BOOL "" FORCE)
+set(CNA_ENGINE_PILOT_PROBES             OFF CACHE BOOL "" FORCE)
+add_subdirectory("${CARSIM_CNA_ENGINE_ROOT}" cna-engine EXCLUDE_FROM_ALL)
+
 message(STATUS "car-simulator ${PROJECT_VERSION}: renderer ${CNA_GRAPHICS_RENDERER}, "
                "${CMAKE_BUILD_TYPE}, ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "car-simulator: CNA at ${CARSIM_CNA_ROOT}")
 message(STATUS "car-simulator: Sharp Runtime at ${CARSIM_SHARP_RUNTIME_ROOT}")
+message(STATUS "car-simulator: cna-engine at ${CARSIM_CNA_ENGINE_ROOT}")
 
 include(CarSimWarnings)
 
