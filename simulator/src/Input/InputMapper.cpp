@@ -221,28 +221,80 @@ namespace CarSim::Input
         : bindings_(DefaultBindings()),
           padBindings_(DefaultPadBindings())
     {
+        for (std::size_t i = 0; i < ids_.size(); ++i) {
+            ids_[i] = actions_.AddAction(ToString(static_cast<GameAction>(i)));
+        }
+        RebindActions();
     }
 
     void InputMapper::SetBindings(std::vector<Binding> bindings)
     {
         bindings_ = std::move(bindings);
+        RebindActions();
+    }
+
+    void InputMapper::RebindActions()
+    {
+        using CnaEngine::Input::GamePadAxis;
+        using EngineBinding = CnaEngine::Input::Binding;
+        for (const auto id : ids_) {
+            actions_.ClearBindings(id);
+        }
+        const auto id = [&](const GameAction action) { return ids_[static_cast<std::size_t>(action)]; };
+        for (const auto& b : bindings_) {
+            actions_.Bind(id(b.action), EngineBinding::ForKey(b.key));
+        }
+        for (const auto& b : padBindings_) {
+            actions_.Bind(id(b.action), EngineBinding::ForButton(b.button));
+        }
+        // Analog controls also count as held past half travel, so walking and flying (which
+        // read actions, not pedals) answer to the controller too. The engine holds an axis at
+        // `value >= threshold`; the next float above each limit keeps this project's `> limit`.
+        const float half = std::nextafter(0.5f, 1.0f);
+        // A thumbstick is curved as |x|^1.6, so it passes half deflection at 0.5^(1/1.6); a
+        // wheel is linear.
+        const float steer = wheelProfile_ ? half : std::nextafter(std::pow(0.5f, 1.0f / 1.6f), 1.0f);
+        actions_.Bind(id(GameAction::Throttle), EngineBinding::ForAxis(GamePadAxis::RightTrigger, 1, half));
+        actions_.Bind(id(GameAction::Brake), EngineBinding::ForAxis(GamePadAxis::LeftTrigger, 1, half));
+        actions_.Bind(id(GameAction::SteerLeft), EngineBinding::ForAxis(GamePadAxis::LeftStickX, -1, steer));
+        actions_.Bind(id(GameAction::SteerRight), EngineBinding::ForAxis(GamePadAxis::LeftStickX, 1, steer));
+    }
+
+    void InputMapper::UpdateActions()
+    {
+        CnaEngine::Input::InputSnapshot snapshot;
+        snapshot.keyboard = current_;
+        snapshot.gamePad = gamePad_;
+        actions_.Update(snapshot);
     }
 
     void InputMapper::Update()
     {
-        Update(Keyboard::GetState());
+        // Both devices, then one frame of the action map.
+        current_ = Keyboard::GetState();
         using Microsoft::Xna::Framework::PlayerIndex;
         const GamePadState state = GamePad::GetState(PlayerIndex::One, GamePadDeadZone::IndependentAxes);
         bool wheel = false;
         if (state.getIsConnectedProperty()) {
             wheel = GamePad::GetCapabilities(PlayerIndex::One).getGamePadTypeProperty() == GamePadType::Wheel;
         }
-        UpdatePad(state, wheel);
+        UpdatePadState(state, wheel);
+        UpdateActions();
     }
 
     void InputMapper::UpdatePad(const GamePadState& state, const bool wheel)
     {
-        previousPadButtons_ = pad_.buttons;
+        UpdatePadState(state, wheel);
+        UpdateActions();
+    }
+
+    void InputMapper::UpdatePadState(const GamePadState& state, const bool wheel)
+    {
+        gamePad_ = state;
+        if (wheel != wheelProfile_) {
+            wheelProfile_ = wheel;
+            RebindActions();
+        }
         pad_ = PadSnapshot{};
         if (!state.getIsConnectedProperty()) {
             return;
@@ -263,27 +315,6 @@ namespace CarSim::Input
         for (const Buttons b : kAll) {
             if (state.IsButtonDown(b)) pad_.buttons |= static_cast<std::uint32_t>(b);
         }
-    }
-
-    bool InputMapper::PadHeld(const GameAction action) const
-    {
-        for (const auto& b : padBindings_) {
-            if (b.action == action && (pad_.buttons & static_cast<std::uint32_t>(b.button)) != 0) {
-                return true;
-            }
-        }
-        // Analog controls also count as held past half travel, so walking and flying (which
-        // read actions, not pedals) answer to the controller too.
-        if (pad_.connected) {
-            switch (action) {
-                case GameAction::Throttle: return pad_.throttle > 0.5f;
-                case GameAction::Brake: return pad_.brake > 0.5f;
-                case GameAction::SteerLeft: return pad_.steering < -0.5f;
-                case GameAction::SteerRight: return pad_.steering > 0.5f;
-                default: break;
-            }
-        }
-        return false;
     }
 
     std::string InputMapper::ButtonName(const Buttons button)
@@ -320,8 +351,8 @@ namespace CarSim::Input
 
     void InputMapper::Update(const KeyboardState& state)
     {
-        previous_ = current_;
         current_ = state;
+        UpdateActions();
     }
 
     bool InputMapper::KeyHeld(const GameAction action) const
@@ -336,23 +367,12 @@ namespace CarSim::Input
 
     bool InputMapper::Held(const GameAction action) const
     {
-        return KeyHeld(action) || PadHeld(action);
+        return actions_.Held(ids_[static_cast<std::size_t>(action)]);
     }
 
     bool InputMapper::Pressed(const GameAction action) const
     {
-        for (const auto& b : bindings_) {
-            if (b.action == action && current_.IsKeyDown(b.key) && !previous_.IsKeyDown(b.key)) {
-                return true;
-            }
-        }
-        for (const auto& b : padBindings_) {
-            const auto bit = static_cast<std::uint32_t>(b.button);
-            if (b.action == action && (pad_.buttons & bit) != 0 && (previousPadButtons_ & bit) == 0) {
-                return true;
-            }
-        }
-        return false;
+        return actions_.Pressed(ids_[static_cast<std::size_t>(action)]);
     }
 
     Sim::DriverControls InputMapper::BuildDriverControls(const Sim::TransmissionMode mode) const
@@ -574,6 +594,7 @@ namespace CarSim::Input
                 }
             }
         }
+        RebindActions();
     }
 
     std::vector<std::pair<std::string, std::string>> InputMapper::NamedBindings() const

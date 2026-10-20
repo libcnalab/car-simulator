@@ -3,11 +3,14 @@
 
 #include "CarSim/Sim/DriverControls.hpp"
 
+#include "CnaEngine/Input/ActionMap.hpp"
+
 #include "Microsoft/Xna/Framework/Input/Buttons.hpp"
 #include "Microsoft/Xna/Framework/Input/GamePadState.hpp"
 #include "Microsoft/Xna/Framework/Input/KeyboardState.hpp"
 #include "Microsoft/Xna/Framework/Input/Keys.hpp"
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -57,6 +60,11 @@ namespace CarSim::Input
 
     /// Polls the keyboard once per frame and answers held/pressed queries per action.
     /// Bindings are data so a settings file (or a gamepad layer) can replace them later.
+    ///
+    /// Held and Pressed come from cna-engine's ActionMap: an action is pressed when it goes
+    /// from released to held, whichever of its keys or buttons does it (a second key held
+    /// together with the first does not press the action again). Each Update(KeyboardState)
+    /// or UpdatePad() call is one frame; Update() reads both devices for one frame.
     class InputMapper
     {
     public:
@@ -100,13 +108,20 @@ namespace CarSim::Input
 
     private:
         [[nodiscard]] bool KeyHeld(GameAction action) const;
-        [[nodiscard]] bool PadHeld(GameAction action) const;
+        /// Rebuilds the action map's bindings from bindings_ and padBindings_.
+        void RebindActions();
+        /// Stores a controller state and derives the analog snapshot (no action-map frame).
+        void UpdatePadState(const Microsoft::Xna::Framework::Input::GamePadState& state, bool wheel);
+        /// One frame of the action map from the current keyboard and controller states.
+        void UpdateActions();
 
         std::vector<Binding> bindings_;
         std::vector<PadBinding> padBindings_;
         PadSnapshot pad_;
-        std::uint32_t previousPadButtons_ = 0;
         Microsoft::Xna::Framework::Input::KeyboardState current_;
-        Microsoft::Xna::Framework::Input::KeyboardState previous_;
+        Microsoft::Xna::Framework::Input::GamePadState gamePad_;
+        CnaEngine::Input::ActionMap actions_;
+        std::array<CnaEngine::Input::ActionId, static_cast<std::size_t>(GameAction::Count)> ids_{};
+        bool wheelProfile_ = false;
     };
 }
