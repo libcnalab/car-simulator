@@ -1,15 +1,14 @@
 #include "CarSim/Render/Screenshot.hpp"
 
-#include "Microsoft/Xna/Framework/Color.hpp"
+#include "CnaEngine/Graphics/ScreenCapture.hpp"
+
 #include "Microsoft/Xna/Framework/Graphics/GraphicsDevice.hpp"
-#include "Microsoft/Xna/Framework/Graphics/PresentationParameters.hpp"
 #include "Microsoft/Xna/Framework/Graphics/Texture2D.hpp"
 #include "System/IO/FileMode.hpp"
 #include "System/IO/FileStream.hpp"
 
 #include <exception>
 #include <iostream>
-#include <vector>
 
 namespace CarSim::Render
 {
@@ -18,28 +17,15 @@ namespace CarSim::Render
 
     bool SaveBackBufferPng(GraphicsDevice& device, const std::string& path)
     {
-        try {
-            const auto& pp = device.getPresentationParametersProperty();
-            const int width = pp.getBackBufferWidthProperty();
-            const int height = pp.getBackBufferHeightProperty();
-            if (width <= 0 || height <= 0) {
-                std::cerr << "screenshot: back buffer has no size\n";
-                return false;
-            }
-
-            std::vector<Color> pixels(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
-            device.GetBackBufferData(pixels.data(), static_cast<int>(pixels.size()));
-
-            Texture2D texture(device, width, height);
-            texture.SetData(pixels.data(), static_cast<int>(pixels.size()));
-
-            System::IO::FileStream stream(path, System::IO::FileMode::Create);
-            texture.SaveAsPng(&stream, width, height);
-            return true;
-        } catch (const std::exception& error) {
-            std::cerr << "screenshot: failed to save '" << path << "': " << error.what() << "\n";
-            return false;
+        // cna-engine's capture reads the back buffer (GetBackBufferData) and writes the PNG;
+        // a refusal (Reach device, no back buffer, unwritable file) comes back as a value.
+        CnaEngine::Graphics::CaptureOptions options;
+        options.path = path;
+        const auto result = CnaEngine::Graphics::CaptureBackBuffer(device, options);
+        if (!result.success) {
+            std::cerr << "screenshot: failed to save '" << path << "': " << result.error << "\n";
         }
+        return result.success;
     }
 
     bool SaveTexturePng(Texture2D& texture, const std::string& path)
