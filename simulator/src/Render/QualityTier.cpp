@@ -1,24 +1,51 @@
 #include "CarSim/Render/QualityTier.hpp"
 
+#include "CnaEngine/Graphics/QualitySchema.hpp"
+
 #include <algorithm>
 #include <cctype>
 
 namespace CarSim::Render
 {
-    QualitySettings SettingsFor(const QualityTier tier)
+    namespace
     {
-        switch (tier) {
-            case QualityTier::Low:
+        // The tiers as a cna-engine quality schema: each setting is declared with its bounds,
+        // so a preset value outside them is rejected when the schema is built instead of
+        // silently reaching the renderer.
+        const CnaEngine::Graphics::QualitySchema& TierSchema()
+        {
+            static const CnaEngine::Graphics::QualitySchema schema = [] {
+                const QualitySettings defaults;
+                CnaEngine::Graphics::QualitySchema s;
+                s.Declare({"drawDistanceScale", defaults.drawDistanceScale, 0.1, 4.0, {}});
+                s.Declare({"mirrorDistanceM", defaults.mirrorDistanceM, 0.0, 5000.0, {}});
+                s.Declare({"mirrorUpdateEvery", defaults.mirrorUpdateEvery, 1.0, 16.0, {}});
+                s.Declare({"vegetationScale", defaults.vegetationScale, 0.0, 4.0, {}});
                 // Half the world distance, a quarter of the vegetation, and a mirror that is
                 // redrawn every third frame at a third of the distance. On a software rasteriser
                 // this roughly halves the frame; on a GPU it is the setting for 1440p or higher.
-                return QualitySettings{0.5f, 110.0f, 3, 0.5f};
-            case QualityTier::Medium:
-                return QualitySettings{0.75f, 200.0f, 2, 0.75f};
-            case QualityTier::High:
-            default:
-                return QualitySettings{1.0f, 300.0f, 1, 1.0f};
+                s.DefinePreset("low", {{"drawDistanceScale", 0.5f},
+                                       {"mirrorDistanceM", 110.0f},
+                                       {"mirrorUpdateEvery", 3},
+                                       {"vegetationScale", 0.5f}});
+                s.DefinePreset("medium", {{"drawDistanceScale", 0.75f},
+                                          {"mirrorDistanceM", 200.0f},
+                                          {"mirrorUpdateEvery", 2},
+                                          {"vegetationScale", 0.75f}});
+                // The defaults are the high tier.
+                s.DefinePreset("high", {});
+                return s;
+            }();
+            return schema;
         }
+    }
+
+    QualitySettings SettingsFor(const QualityTier tier)
+    {
+        // No setting has a device limit, so the profile does not change any value.
+        const auto resolved = TierSchema().Resolve({ToString(tier), {}}, CnaEngine::Graphics::DeviceCapabilities{});
+        return QualitySettings{resolved.Float("drawDistanceScale"), resolved.Float("mirrorDistanceM"),
+                               resolved.Int("mirrorUpdateEvery"), resolved.Float("vegetationScale")};
     }
 
     const char* ToString(const QualityTier tier)
