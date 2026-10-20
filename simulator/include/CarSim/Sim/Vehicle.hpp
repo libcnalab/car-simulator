@@ -16,6 +16,8 @@
 #include "CarSim/Sim/Tyre.hpp"
 #include "CarSim/Sim/VehicleDefinition.hpp"
 
+#include "CnaEngine/Core/FixedStepClock.hpp"
+
 #include "Microsoft/Xna/Framework/Matrix.hpp"
 #include "Microsoft/Xna/Framework/Quaternion.hpp"
 #include "Microsoft/Xna/Framework/Vector3.hpp"
@@ -258,7 +260,8 @@ namespace CarSim::Sim
         bool startRefused_ = false;
         float roadWetness_ = 0.0f;
         float roadSnow_ = 0.0f;
-        float accumulator_ = 0.0f;
+        // Fixed physics steps: 0.25 s frame clamp, at most 30 steps a frame.
+        CnaEngine::FixedStepClock clock_{kPhysicsStepSeconds, 0.25, 30};
         float lastSpeedMs_ = 0.0f;
         bool flightMode_ = false;
         float flightYaw_ = 0.0f;

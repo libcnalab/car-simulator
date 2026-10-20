@@ -115,7 +115,7 @@ namespace CarSim::Sim
             w.grounded = false;
         }
         clutchLocked_ = false;
-        accumulator_ = 0.0f;
+        clock_.Reset();
         lastSpeedMs_ = 0.0f;
     }
 
@@ -205,18 +205,14 @@ namespace CarSim::Sim
             effective.clutch = std::max(effective.clutch, AutoClutchDemand(controls, clamped));
         }
         ApplyDiscreteControls(effective);
-        accumulator_ += clamped;
-        int steps = 0;
-        while (accumulator_ >= kPhysicsStepSeconds && steps < 30) {
+        clock_.Run(frameDt, [&](double) {
             if (flightMode_) {
                 StepFlight(effective, kPhysicsStepSeconds, ground);
             } else {
                 UpdatePedals(effective, kPhysicsStepSeconds);
                 StepPhysics(kPhysicsStepSeconds, ground);
             }
-            accumulator_ -= kPhysicsStepSeconds;
-            ++steps;
-        }
+        });
     }
 
     float Vehicle::AutoClutchDemand(const DriverControls& controls, const float dt)
