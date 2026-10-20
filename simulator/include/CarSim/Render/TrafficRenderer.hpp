@@ -10,6 +10,8 @@
 #include "CarSim/Sim/CarStyle.hpp"
 #include "CarSim/Traffic/TrafficSystem.hpp"
 
+#include "CnaEngine/Assets/AssetRegistry.hpp"
+
 #include "Microsoft/Xna/Framework/BoundingFrustum.hpp"
 #include "Microsoft/Xna/Framework/Graphics/GraphicsDevice.hpp"
 #include "Microsoft/Xna/Framework/Graphics/Texture2D.hpp"
@@ -87,7 +89,8 @@ namespace CarSim::Render
         std::array<std::unique_ptr<VehicleRenderer>, Sim::CarStyle::kBodyCount * kVariantsPerBody> renderers_;
         const BitmapFont* plateFont_;
         std::unique_ptr<Image> plateAtlas_;
-        std::map<std::string, std::unique_ptr<Microsoft::Xna::Framework::Graphics::Texture2D>> plates_;
+        /// One plate texture per plate text, generated on first use.
+        CnaEngine::Assets::AssetRegistry plates_;
         TrafficRenderStats stats_;
     };
 }

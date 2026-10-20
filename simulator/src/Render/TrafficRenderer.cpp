@@ -12,6 +12,8 @@ namespace CarSim::Render
     TrafficRenderer::TrafficRenderer(GraphicsDevice& device, VehicleMaterials& materials, const BitmapFont* plateFont)
         : plateFont_(plateFont)
     {
+        // Plate numbers are text, not asset paths.
+        plates_.SetNormalizeKeys(false);
         if (plateFont_) {
             plateAtlas_ = std::make_unique<Image>(plateFont_->AtlasImage());
         }
@@ -64,17 +66,13 @@ namespace CarSim::Render
 
     Texture2D* TrafficRenderer::PlateTexture(GraphicsDevice& device, const std::string& text)
     {
-        auto it = plates_.find(text);
-        if (it != plates_.end()) {
-            return it->second.get();
-        }
         if (!plateFont_ || !plateAtlas_) {
             return nullptr;
         }
-        auto texture = UploadTexture(device, PlateRenderer::Render(text, *plateFont_, *plateAtlas_), true);
-        Texture2D* raw = texture.get();
-        plates_.emplace(text, std::move(texture));
-        return raw;
+        return plates_
+            .GetOrCreate<Texture2D>(text,
+                                    [&] { return UploadTexture(device, PlateRenderer::Render(text, *plateFont_, *plateAtlas_), true); })
+            .get();
     }
 
     VehicleRenderer& TrafficRenderer::RendererFor(const Traffic::TrafficVehicle& v)
