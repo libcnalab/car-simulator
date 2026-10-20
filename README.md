@@ -105,7 +105,7 @@ model was available; the car is procedural).
   Python 3 for the tools and static checks.
 - Sibling checkouts (the build consumes them with `add_subdirectory()`):
   - `../cna` -- CNA, branch **`next`**, with submodules `third_party/SDL`,
-    `third_party/SDL_image`, `third_party/SDL_mixer` and `vendor/googletest`.
+    `third_party/SDL_mixer` and `vendor/googletest`.
   - `../sharp-runtime` -- Sharp Runtime, branch **`next`**.
   - `../cna-engine` -- cna-engine, branch **`develop`**: its strict modules carry the input
     actions, the physics clock, screenshots, caches, quality tiers and the world renderer.
@@ -118,7 +118,7 @@ model was available; the car is procedural).
 
 ```bash
 git clone --branch next https://github.com/libcna/cna.git
-git -C cna submodule update --init third_party/SDL third_party/SDL_image third_party/SDL_mixer vendor/googletest
+git -C cna submodule update --init third_party/SDL third_party/SDL_mixer vendor/googletest
 git clone --branch next https://github.com/libcna/sharp-runtime.git
 git clone --branch develop https://github.com/libcna/cna-engine.git
 git clone https://github.com/libcna/easy-gl.git

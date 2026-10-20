@@ -32,7 +32,7 @@ jobs:
       - name: CNA submodules
         run: >
           git -C cna submodule update --init --depth 1
-          third_party/SDL third_party/SDL_image third_party/SDL_mixer vendor/googletest
+          third_party/SDL third_party/SDL_mixer vendor/googletest
       - uses: actions/checkout@v4
         with:
           repository: libcna/sharp-runtime
