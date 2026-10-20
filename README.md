@@ -107,6 +107,8 @@ model was available; the car is procedural).
   - `../cna` -- CNA, branch **`next`**, with submodules `third_party/SDL`,
     `third_party/SDL_image`, `third_party/SDL_mixer` and `vendor/googletest`.
   - `../sharp-runtime` -- Sharp Runtime, branch **`next`**.
+  - `../cna-engine` -- cna-engine, branch **`develop`**: its strict modules carry the input
+    actions, the physics clock, screenshots, caches, quality tiers and the world renderer.
   - `../easy-gl` and `../meta-gl` when building the OpenGL family renderers (`OPENGLES3`, the
     Linux default, `OPENGL33`, ...).
 - Linux packages for SDL3 (X11/Wayland development headers, ALSA/PulseAudio) and OpenGL
@@ -118,6 +120,7 @@ model was available; the car is procedural).
 git clone --branch next https://github.com/libcna/cna.git
 git -C cna submodule update --init third_party/SDL third_party/SDL_image third_party/SDL_mixer vendor/googletest
 git clone --branch next https://github.com/libcna/sharp-runtime.git
+git clone --branch develop https://github.com/libcna/cna-engine.git
 git clone https://github.com/libcna/easy-gl.git
 git clone https://github.com/libcna/meta-gl.git
 git clone https://github.com/libcna/car-simulator.git
@@ -128,8 +131,8 @@ ctest --preset opengles3
 ./build/opengles3/bin/car-simulator
 ```
 
-Pass `-DCARSIM_CNA_ROOT=/path/to/cna -DCARSIM_SHARP_RUNTIME_ROOT=/path/to/sharp-runtime`
-when the checkouts are elsewhere. The renderer is CNA's `CNA_GRAPHICS_RENDERER` option; the
+Pass `-DCARSIM_CNA_ROOT=/path/to/cna -DCARSIM_SHARP_RUNTIME_ROOT=/path/to/sharp-runtime
+-DCARSIM_CNA_ENGINE_ROOT=/path/to/cna-engine` when the checkouts are elsewhere. The renderer is CNA's `CNA_GRAPHICS_RENDERER` option; the
 simulator never depends on which renderer was selected and `CNA_CNAEXT` stays `OFF`.
 
 The content directory is copied next to the executable after each build; the source
