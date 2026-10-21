@@ -108,7 +108,8 @@ model was available; the car is procedural).
     `third_party/SDL_mixer` and `vendor/googletest`.
   - `../sharp-runtime` -- Sharp Runtime, branch **`next`**.
   - `../cna-engine` -- cna-engine, branch **`develop`**: its strict modules carry the input
-    actions, the physics clock, screenshots, caches, quality tiers and the world renderer.
+    actions, the physics clock, screenshots, caches, quality tiers, the world renderer and the
+    textures' mip levels and uploads.
   - `../easy-gl` and `../meta-gl` when building the OpenGL family renderers (`OPENGLES3`, the
     Linux default, `OPENGL33`, ...).
 - Linux packages for SDL3 (X11/Wayland development headers, ALSA/PulseAudio) and OpenGL
