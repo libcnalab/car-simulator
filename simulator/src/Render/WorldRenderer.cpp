@@ -7,6 +7,7 @@
 
 #include "CnaEngine/Graphics/Camera.hpp"
 #include "CnaEngine/Graphics/ForwardRenderer.hpp"
+#include "CnaEngine/Graphics/Image.hpp"
 #include "CnaEngine/Graphics/Material.hpp"
 #include "CnaEngine/Graphics/RenderQueue.hpp"
 #include "CnaEngine/Graphics/RenderStatistics.hpp"
@@ -394,23 +395,14 @@ namespace CarSim::Render
                 out.reserve(m.vertices.size());
                 for (const auto& v : m.vertices) out.push_back(v.color);
             }
-            // Downsample and pack on the worker. The byte SetData overload can copy
-            // each complete level without repacking Color objects on the update thread.
-            Image level = std::move(macro);
-            for (;;) {
+            // Downsample and pack on the worker. cna-engine's mip chain is already RGBA8
+            // bytes, which the byte SetData overload copies on the update thread as they are.
+            for (auto& level : CnaEngine::Graphics::BuildMipChain(macro.ToEngine())) {
                 ShadowBakeJob::MacroLevel packed;
                 packed.width = level.Width();
                 packed.height = level.Height();
-                packed.rgba.reserve(level.Pixels().size() * 4);
-                for (const Color& c : level.Pixels()) {
-                    packed.rgba.push_back(c.getRProperty());
-                    packed.rgba.push_back(c.getGProperty());
-                    packed.rgba.push_back(c.getBProperty());
-                    packed.rgba.push_back(c.getAProperty());
-                }
+                packed.rgba = std::move(level.Bytes());
                 job->macroLevels.push_back(std::move(packed));
-                if (level.Width() == 1 && level.Height() == 1) break;
-                level = level.Downsampled();
             }
             job->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
             job->done.store(true);

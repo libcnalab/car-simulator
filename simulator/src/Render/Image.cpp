@@ -1,5 +1,7 @@
 #include "CarSim/Render/Image.hpp"
 
+#include "CnaEngine/Graphics/Image.hpp"
+
 #include "Microsoft/Xna/Framework/Graphics/CubeMapFace.hpp"
 #include "Microsoft/Xna/Framework/Graphics/SurfaceFormat.hpp"
 
@@ -189,32 +191,26 @@ namespace CarSim::Render
 
     Image Image::Downsampled() const
     {
-        const int w = std::max(1, width_ / 2);
-        const int h = std::max(1, height_ / 2);
-        Image out(w, h);
-        for (int y = 0; y < h; ++y) {
-            for (int x = 0; x < w; ++x) {
-                int r = 0, g = 0, b = 0, a = 0;
-                for (int dy = 0; dy < 2; ++dy) {
-                    for (int dx = 0; dx < 2; ++dx) {
-                        const Color& c = At(std::min(width_ - 1, x * 2 + dx), std::min(height_ - 1, y * 2 + dy));
-                        r += c.getRProperty();
-                        g += c.getGProperty();
-                        b += c.getBProperty();
-                        a += c.getAProperty();
-                    }
-                }
-                out.At(x, y) = Color(r / 4, g / 4, b / 4, a / 4);
-            }
-        }
+        return FromEngine(CnaEngine::Graphics::Downsample(ToEngine()));
+    }
+
+    CnaEngine::Graphics::Image Image::ToEngine() const
+    {
+        return CnaEngine::Graphics::Image::FromColors(width_, height_, pixels_);
+    }
+
+    Image Image::FromEngine(const CnaEngine::Graphics::Image& image)
+    {
+        Image out;
+        out.width_ = image.Width();
+        out.height_ = image.Height();
+        out.pixels_ = image.ToColors();
         return out;
     }
 
     std::unique_ptr<Texture2D> UploadTexture(GraphicsDevice& device, const Image& image, const bool mipmaps)
     {
-        auto texture = std::make_unique<Texture2D>(device, image.Width(), image.Height(), mipmaps, SurfaceFormat::Color);
-        UpdateTexture(*texture, image);
-        return texture;
+        return CnaEngine::Graphics::UploadTexture(device, image.ToEngine(), {}, mipmaps);
     }
 
     void UpdateTexture(Texture2D& texture, const Image& image)
@@ -222,16 +218,7 @@ namespace CarSim::Render
         if (texture.getWidthProperty() != image.Width() || texture.getHeightProperty() != image.Height()) {
             throw std::invalid_argument("texture update dimensions do not match");
         }
-        texture.SetData(0, nullptr, image.Pixels().data(), 0, static_cast<int>(image.Pixels().size()));
-        if (texture.getLevelCountProperty() > 1) {
-            Image level = image;
-            int index = 1;
-            while (level.Width() > 1 || level.Height() > 1) {
-                level = level.Downsampled();
-                texture.SetData(index, nullptr, level.Pixels().data(), 0, static_cast<int>(level.Pixels().size()));
-                ++index;
-            }
-        }
+        CnaEngine::Graphics::UpdateTexture(texture, image.ToEngine(), {});
     }
 
     std::unique_ptr<TextureCube> UploadCubeMap(GraphicsDevice& device, const std::vector<Image>& faces)

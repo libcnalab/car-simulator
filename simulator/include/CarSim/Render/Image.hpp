@@ -13,6 +13,11 @@
 #include <memory>
 #include <vector>
 
+namespace CnaEngine::Graphics
+{
+    class Image;
+}
+
 namespace CarSim::Render
 {
     using Microsoft::Xna::Framework::Color;
@@ -67,13 +72,18 @@ namespace CarSim::Render
         /// Half-size box-filtered copy (mip level generation), sizes rounded down to >= 1.
         [[nodiscard]] Image Downsampled() const;
 
+        /// The same pixels as cna-engine's RGBA8 image, which does the mip filtering and uploads.
+        [[nodiscard]] CnaEngine::Graphics::Image ToEngine() const;
+        [[nodiscard]] static Image FromEngine(const CnaEngine::Graphics::Image& image);
+
     private:
         int width_ = 0;
         int height_ = 0;
         std::vector<Color> pixels_;
     };
 
-    /// Uploads an image as a Texture2D with a full mip chain generated on the CPU.
+    /// Uploads an image as a Texture2D with a full mip chain generated on the CPU (cna-engine's
+    /// truncating 2x2 box filter).
     [[nodiscard]] std::unique_ptr<Microsoft::Xna::Framework::Graphics::Texture2D>
     UploadTexture(Microsoft::Xna::Framework::Graphics::GraphicsDevice& device, const Image& image, bool mipmaps = true);
     /// Replaces every mip level of an existing same-size texture through the XNA public API.
