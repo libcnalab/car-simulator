@@ -52,6 +52,7 @@ listening packs); those were retired from the tree and remain in git history.
 Developer memory checks use the project-only `asan-ubsan` preset described in
 [`docs/sanitizers.md`](docs/sanitizers.md). GPU measurements on an AMD Radeon 780M, their
 limits and how to reproduce them are in [`docs/performance.md`](docs/performance.md).
+Defects found by cna-engine and not fixed yet are in [`docs/known-issues.md`](docs/known-issues.md).
 
 What you get today:
 
